@@ -1,13 +1,13 @@
-// ZCode provider bridge for pi.
+// ZCode provider bridge for omp (fork of ZhouXiaolin/zcode-provider).
 //
 // Turns the ZCode CLI agent (`zcodex app-server`, a.k.a. "ZCode Protocol"
-// stdio NDJSON server) into a pi model provider named "zcode". pi is the chat
+// stdio NDJSON server) into an omp model provider named "zcode". omp is the chat
 // frontend; the ZCode agent keeps its own session, runs its own tools (edits,
-// shell, ...), and its text reply is streamed back to pi.
+// shell, ...), and its text reply is streamed back to omp.
 //
-// One pi model per ZCode provider/model, listed from the app-server's settings
+// One omp model per ZCode provider/model, listed from the app-server's settings
 // file (default ~/.zcode/cli/config.json; override ZCODE_SETTINGS). Selecting a
-// pi model calls session/setModel so the ZCode agent runs the chosen
+// omp model calls session/setModel so the ZCode agent runs the chosen
 // provider/model for the turn.
 //
 // Auto-sync: providers configured in the ZCode v2 config (default
@@ -18,9 +18,9 @@
 // "provider/model" ref) and refuses to run a turn with "Model config is
 // missing" when it is absent or invalid, so the settings file is bootstrapped
 // with a valid default too (existing ref kept, else v2's model selection,
-// else the first enabled provider's first model). pi re-reads the catalog on
-// every /model open via refreshModels, so new providers/models show up without
-// a reload.
+// else the first enabled provider's first model). omp refreshes a provider's
+// catalog through fetchDynamicModels, so new providers/models show up without a
+// reload.
 //
 // Wire protocol (ZCode Protocol v1, NDJSON over stdio), verified live:
 //   request:       {"id": N, "method": "...", "params": {...}}
@@ -40,7 +40,7 @@
 // terminal. A live subscription is
 // required so those authoritative terminal events cannot be missed.
 //
-// Messages typed in pi while a turn is running follow ZCode's own
+// Messages typed in omp while a turn is running follow ZCode's own
 // followupMode semantics (see ZCODE_STEER_MODE): queue (default) processes
 // them as a new turn after the current one; guide (opt-in) injects them into
 // the running session at the next tool/message boundary via the v4 command
@@ -50,7 +50,7 @@
 // ZCode install for the current platform (Linux /opt, macOS /Applications).
 // Permission requests are auto-allowed unless ZCODE_AUTO_ALLOW=0 (the point is
 // that the ZCode agent executes tasks). Verify raw traffic with /zcode-probe.
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai";
 import type {
   Api,
   AssistantMessage,
@@ -58,17 +58,17 @@ import type {
   Context,
   Model,
   SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { InputEventResult } from "@earendil-works/pi-coding-agent";
+} from "@oh-my-pi/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { InputEventResult } from "@oh-my-pi/pi-coding-agent";
+import { getEditorTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
   Editor,
-  type EditorTheme,
   Key,
   matchesKey,
   visibleWidth,
   wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+} from "@oh-my-pi/pi-tui";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
@@ -83,17 +83,17 @@ const V2_CONFIG_PATH =
 const V2_SETTING_PATH =
   process.env.ZCODE_V2_SETTING ?? `${process.env.HOME ?? "~"}/.zcode/v2/setting.json`;
 
-// How a message typed in pi while a ZCode turn is running is delivered.
-//   queue: pi queues it; it runs as a new turn after the current one
+// How a message typed in omp while a ZCode turn is running is delivered.
+//   queue: omp queues it; it runs as a new turn after the current one
 //      completes (ZCode followupMode "queue").
-//   guide: pi hands the text to the running ZCode session via the v4 command
+//   guide: omp hands the text to the running ZCode session via the v4 command
 //      channel; ZCode injects it at the next tool/message boundary inside the
 //      SAME turn (ZCode followupMode "guide"), falling back to queue when the
 //      turn is not steerable.
 // Explicit ZCODE_STEER_MODE wins; otherwise honor ZCode's own UI setting
 // (zcodeInteractionBehavior in the v2 setting.json — "guide" means the ZCode
 // desktop app itself steers mid-turn), so a ZCode install configured for
-// guide-mode interaction steers in pi too. Default: queue.
+// guide-mode interaction steers in omp too. Default: queue.
 const STEER_MODE: "queue" | "guide" = (() => {
   const env = process.env.ZCODE_STEER_MODE;
   if (env === "queue" || env === "guide") return env;
@@ -116,7 +116,7 @@ const TURN_TIMEOUT_MS = (() => {
 })();
 
 interface CatalogModel {
-  id: string; // `${providerName}/${modelId}`, the pi model id
+  id: string; // `${providerName}/${modelId}`, the omp model id
   providerId: string;
   modelId: string;
   contextWindow?: number; // settings file models[id].limit.context
@@ -372,7 +372,7 @@ function watchConfigs(): void {
       const watcher = watch(dir, (_event, filename) => {
         if (filename && String(filename) === target) onChange();
       });
-      // Headless pi runs must be allowed to exit after the turn completes.
+      // Headless omp runs must be allowed to exit after the turn completes.
       watcher.unref();
     } catch {
       /* dir may not exist yet; the spawn-time merge covers that case */
@@ -425,17 +425,17 @@ let sessionId: string | null = null;
 let lastModelId: string | null = null;
 let probeLog: ((line: string) => void) | null = null;
 
-// ---- ZCode session continuity across pi restarts ----
-// sessionId above is in-memory only: when pi exits it is lost, and a restore
-// (`pi --session <id>` / `/resume`) would run session/create and get a
+// ---- ZCode session continuity across omp restarts ----
+// sessionId above is in-memory only: when omp exits it is lost, and a restore
+// (`omp --resume <id>` / `/resume`) would run session/create and get a
 // brand-new ZCode session with none of the agent's accumulated context. The
 // app-server persists sessions in its own SQLite store (session/resume
-// rehydrates them even after the app-server restarted with pi), so remember
-// the zcode sessionId per pi session UUID in a small sidecar file next to the
+// rehydrates them even after the app-server restarted with omp), so remember
+// the zcode sessionId per omp session UUID in a small sidecar file next to the
 // settings file and resume it on restore.
 const SESSION_MAP_PATH = `${dirname(SETTINGS_PATH)}/zcode-provider-sessions.json`;
 const SESSION_MAP_MAX_ENTRIES = 32;
-let piSessionId: string | null = null; // pi session UUID, captured at session_start
+let ompSessionId: string | null = null; // omp session UUID, captured at session_start
 
 interface RememberedSession {
   sessionId: string;
@@ -454,13 +454,13 @@ function loadSessionMap(): Record<string, RememberedSession> {
   }
 }
 
-// Persist (or refresh) the zcode sessionId for the current pi session. The map
+// Persist (or refresh) the zcode sessionId for the current omp session. The map
 // is bounded: oldest entries (by last update) are dropped past the cap.
 function rememberSession(sid: string, workspacePath: string): void {
-  if (!piSessionId) return;
+  if (!ompSessionId) return;
   try {
     const map = loadSessionMap();
-    map[piSessionId] = {
+    map[ompSessionId] = {
       sessionId: sid,
       workspacePath,
       updatedAt: new Date().toISOString(),
@@ -481,24 +481,24 @@ function rememberSession(sid: string, workspacePath: string): void {
   }
 }
 
-// The zcode session this pi session used before, if any and if it still points
-// at the same workspace (a restored pi session runs in the cwd it was created
+// The zcode session this omp session used before, if any and if it still points
+// at the same workspace (a restored omp session runs in the cwd it was created
 // in; a different cwd is a different project, so a fresh session is correct).
 function rememberedSessionId(): string | null {
-  if (!piSessionId) return null;
-  const entry = loadSessionMap()[piSessionId];
+  if (!ompSessionId) return null;
+  const entry = loadSessionMap()[ompSessionId];
   if (!entry || entry.workspacePath !== process.cwd()) return null;
   return entry.sessionId;
 }
 
 // Guide-steer state (ZCODE_STEER_MODE=guide): whether a ZCode turn is
-// currently running (pi input events during it can be injected live) and the
+// currently running (omp input events during it can be injected live) and the
 // v4 publisher facts needed for the setFollowupMode CAS command.
 let turnActive = false;
 // Background tasks (run_in_background bash etc.) observed running per session,
 // tracked from session/event "session.updated" notifications. ZCode's own stop
 // (v4 stop / session/stop) leaves them running; the bridge cancels them when a
-// pi turn is aborted so a cancel in pi stops everything the agent started.
+// omp turn is aborted so a cancel in omp stops everything the agent started.
 const runningTasksBySession = new Map<string, Set<string>>();
 // ZCode tool names are namespaced: builtins are plain ("Bash", "Read"),
 // MCP tools are "mcp__<server>__<tool>" (e.g. "mcp__codegraph__codegraph_explore"),
@@ -508,7 +508,7 @@ const runningTasksBySession = new Map<string, Set<string>>();
 function displayToolName(toolName: string): string {
   return toolName.startsWith("mcp__") ? toolName.slice("mcp__".length) : toolName;
 }
-// The pi UI context, captured at session_start. Used to show the question
+// The omp UI context, captured at session_start. Used to show the question
 // dialog when the ZCode app-server asks the user (interaction/requestUserInput,
 // the model's askUserQuestion tool) and pass the answer back into the session.
 let uiCtx: ExtensionContext | null = null;
@@ -569,12 +569,12 @@ function startServer(): void {
       child.stdin!.write(
         JSON.stringify({
           id: msg.id,
-          result: { decision: allow ? "allow" : "deny", reason: "pi zcode bridge" },
+          result: { decision: allow ? "allow" : "deny", reason: "omp zcode bridge" },
         }) + "\n",
       );
     } else if (msg.method === "interaction/requestUserInput") {
       // ZCode's askUserQuestion tool: the model asks the user. Show the
-      // question dialog in pi and answer with the user's choice so the ZCode
+      // question dialog in omp and answer with the user's choice so the ZCode
       // agent continues in the same session.
       void handleUserInputInteraction(msg);
     }
@@ -685,8 +685,8 @@ function normalizeToolInput(input: unknown): Record<string, unknown> {
 }
 
 // ---- Tool display. ZCode executes its own tools inside its session, so the
-// bridge never emits pi toolCall blocks (pi's harness would try to execute
-// them itself, and pi's TUI renders every toolCall block as a box appended
+// bridge never emits omp toolCall blocks (omp's harness would try to execute
+// them itself, and omp's TUI renders every toolCall block as a box appended
 // BELOW the assistant message — splitting the transcript into a text part on
 // top and a tool part below). Instead each tool call and its result are
 // rendered as inline markdown text blocks appended in the order the
@@ -695,12 +695,12 @@ function normalizeToolInput(input: unknown): Record<string, unknown> {
 
 // Display caps for inline tool result blocks. The full result stays inside the
 // ZCode session — the agent's model already consumed it — so these only keep
-// the transcript readable, mirroring pi's own tool display:
+// the transcript readable, mirroring omp's own tool display:
 //   - bash: the command, a "... N earlier lines" marker and the TAIL of the
-//     output, closed with a "Took 0.0s" line (pi renders bash output as a
+//     output, closed with a "Took 0.0s" line (omp renders bash output as a
 //     tail preview plus a duration line)
 //   - read: collapses to the call line "read <path>:from-to" and hides the
-//     content (pi shows only the call for a collapsed read)
+//     content (omp shows only the call for a collapsed read)
 // Every other tool keeps a hard cap on the head of the output.
 const MAX_RESULT_CHARS = 6000;
 // Tail lines shown under the "... N earlier lines" marker for bash output.
@@ -746,7 +746,7 @@ function formatToolCall(name: string, args: Record<string, unknown>): string {
   return `${header}\n\n\`\`\`json\n${JSON.stringify(args, null, 2)}\n\`\`\``;
 }
 
-// Like pi's read call (`read <path>:<from>-<to>`): append the requested line
+// Like omp's read call (`read <path>:<from>-<to>`): append the requested line
 // range when the args carry offset/limit.
 function readRangeSuffix(name: string, args: Record<string, unknown>): string {
   if (!READ_TOOLS.has(name.toLowerCase())) return "";
@@ -764,7 +764,7 @@ function numArg(v: unknown): number | undefined {
   return undefined;
 }
 
-// bash calls merge command + output into ONE fenced block, echoing pi's
+// bash calls merge command + output into ONE fenced block, echoing omp's
 // native `$ cmd` + output rendering (the bridge cannot emit real toolCall
 // blocks because ZCode executes the tools itself). The call opens the fence
 // with the command; the result appends the output and closes it.
@@ -801,7 +801,7 @@ function toolResultBody(result: ZcodeToolResult): string {
   return body;
 }
 
-// Tail preview mirroring pi's bash display: keep the last `maxLines` lines,
+// Tail preview mirroring omp's bash display: keep the last `maxLines` lines,
 // hard-capped at `maxChars`; a single over-long trailing line is shown from
 // its tail. Reports how many lines/chars were cut for the marker.
 function truncateTail(
@@ -846,7 +846,7 @@ function formatDuration(ms: number): string {
 }
 
 // One-line display of a ZCode turn error (upstream API timeouts, auth
-// failures, ...) so pi shows the real reason instead of a generic "turn
+// failures, ...) so omp shows the real reason instead of a generic "turn
 // ended with failure". "Origin Time-out" + statusCode 524 from the
 // app-server's attribution becomes "Origin Time-out (HTTP 524)".
 function formatTurnError(e: ZcodeTurnError): string {
@@ -864,7 +864,7 @@ function formatToolResult(name: string, result: ZcodeToolResult): string {
   return `${marker}\`\`\`text\n${body}\n\`\`\``;
 }
 
-// File-read results collapse to nothing, like pi's collapsed read box — the
+// File-read results collapse to nothing, like omp's collapsed read box — the
 // call line (`🔧 read — <path>:from-to`) is the whole display and the content
 // stays inside the ZCode session. Failures still show the error text.
 function formatReadResult(result: ZcodeToolResult): string {
@@ -876,7 +876,7 @@ function formatReadResult(result: ZcodeToolResult): string {
 }
 
 // Appended inside the merged bash fence: blank line, then the tail preview
-// ("... N earlier lines" marker + last lines), then a duration line like pi's
+// ("... N earlier lines" marker + last lines), then a duration line like omp's
 // "Took 0.0s", then the closing fence. Failure is a plain line (markdown
 // inside a ```text fence is not rendered).
 function formatBashResultClose(result: ZcodeToolResult, startedAt?: number): string {
@@ -897,7 +897,7 @@ function formatBashResultClose(result: ZcodeToolResult, startedAt?: number): str
 // ---- interaction/requestUserInput (ZCode askUserQuestion) ----
 // The app-server asks the connected client to collect answers from the user
 // (the model called its askUserQuestion tool, 1-4 questions each with
-// header/question/options[2-4]/multiSelect). Show pi's question dialog, then
+// header/question/options[2-4]/multiSelect). Show omp's question dialog, then
 // answer the request so the ZCode agent resumes with the user's choices.
 // Response content: {answer} for one question, {answers: {question: ans}}
 // for several (the server maps them back; multiSelect label arrays join ", ").
@@ -929,7 +929,7 @@ async function handleUserInputInteraction(msg: {
     const content = await askQuestionsInPi(questions);
     respond({ action: "accept", content });
   } catch {
-    respond({ action: "cancel", reason: "cancelled by user in pi" });
+    respond({ action: "cancel", reason: "cancelled by user in omp" });
   }
 }
 
@@ -937,7 +937,7 @@ type QuestionAnswer = string | string[];
 
 async function askQuestionsInPi(questions: ZcodeWireQuestion[]): Promise<Record<string, unknown>> {
   const ctx = uiCtx;
-  if (!ctx || ctx.mode !== "tui") throw new Error("no interactive pi UI");
+  if (!ctx || ctx.mode !== "tui") throw new Error("no interactive omp UI");
   if (questions.length === 1) {
     const ans = await askOneQuestionInPi(ctx, questions[0]);
     if (ans === null) throw new Error("cancelled");
@@ -973,17 +973,9 @@ async function askOneQuestionInPi(
       let toggled = new Set<number>();
       let cachedLines: string[] | undefined;
 
-      const editorTheme: EditorTheme = {
-        borderColor: (s) => theme.fg("accent", s),
-        selectList: {
-          selectedPrefix: (t) => theme.fg("accent", t),
-          selectedText: (t) => theme.fg("accent", t),
-          description: (t) => theme.fg("muted", t),
-          scrollInfo: (t) => theme.fg("dim", t),
-          noMatch: (t) => theme.fg("warning", t),
-        },
-      };
-      const editor = new Editor(tui, editorTheme);
+      // omp's Editor takes only a theme; getEditorTheme() supplies the host's
+      // full EditorTheme, including the required symbol set.
+      const editor = new Editor(getEditorTheme());
       editor.onSubmit = (value) => {
         const trimmed = value.trim();
         if (trimmed) {
@@ -1195,7 +1187,7 @@ async function setupGuideMode(sid: string): Promise<void> {
       "v4/conversation/subscribe",
       {
         topic: `conversation/${sid}`,
-        connectionId: `pi-${randomUUID()}`,
+        connectionId: `omp-${randomUUID()}`,
         clientMode: "desktop-continuous",
       },
     );
@@ -1220,8 +1212,8 @@ async function setupGuideMode(sid: string): Promise<void> {
       const fm = await request<{ status?: string; reasonCode?: string }>(
         "v4/command",
         {
-          commandId: `pi-fm-${nextId++}`,
-          clientId: "pi-bridge",
+          commandId: `omp-fm-${nextId++}`,
+          clientId: "omp-bridge",
           sessionId: sid,
           type: "setFollowupMode",
           payload: { mode: "guide" },
@@ -1280,7 +1272,7 @@ function streamSimple(
     const finish = (reason: "stop" | "error" | "aborted", errorMessage?: string) => {
       if (output.stopReason !== "pending") return;
       // Close any bash blocks still awaiting their result so every text block
-      // ends (pi finalizes messages on text_end).
+      // ends (omp finalizes messages on text_end).
       flushPendingBashBlocks();
       if (reason === "stop") {
         output.stopReason = "stop";
@@ -1298,7 +1290,7 @@ function streamSimple(
     // reasoning blocks are keyed by assistantMessageId (the app-server emits
     // a fresh id per reasoning/text/tool round, so segments interleave).
     // ZCode runs its own tools, so tool calls/results are rendered inline as
-    // text blocks keyed by toolCallId — pi would otherwise execute toolCall
+    // text blocks keyed by toolCallId — omp would otherwise execute toolCall
     // blocks itself and its TUI renders them as boxes below the message.
     const msgBlocks = new Map<string, { text?: number; thinking?: number }>();
     const toolTextBlocks = new Map<string, number>();
@@ -1452,7 +1444,7 @@ function streamSimple(
         failed = true;
         turnSettled = true;
         // turn.failed carries the structured error (type/message/code/detail
-        // + attribution.statusCode); surface the real reason to pi.
+        // + attribution.statusCode); surface the real reason to omp.
         if (!turnError && pl.error?.message) turnError = formatTurnError(pl.error);
         return;
       }
@@ -1479,7 +1471,7 @@ function streamSimple(
       }
       if (ev.type === "session.updated") {
         // Background-task status pushes (run_in_background bash etc.): track
-        // running tasks so a pi abort can stop them too (ZCode's own stop
+        // running tasks so an omp abort can stop them too (ZCode's own stop
         // does not). Any non-"running" status retires the task id.
         const tid = pl.taskId;
         const status = pl.status;
@@ -1548,10 +1540,10 @@ function streamSimple(
     try {
       ref = resolveModelRef(model.id);
       if (!sessionId) {
-        // pi restarted / session restored (`pi --session`): continue the zcode
-        // session this pi session used before instead of silently creating a
+        // omp restarted / session restored (`omp --resume`): continue the zcode
+        // session this omp session used before instead of silently creating a
         // fresh one. The app-server persisted it, so resume rehydrates it even
-        // though the app-server process restarted along with pi.
+        // though the app-server process restarted along with omp.
         const remembered = rememberedSessionId();
         if (remembered) {
           try {
@@ -1609,7 +1601,7 @@ function streamSimple(
         try {
           await request("session/stop", { sessionId: sid });
           // ZCode's own stop (v4 stop / session/stop) leaves run_in_background
-          // tasks running; cancel them explicitly so a cancel in pi stops
+          // tasks running; cancel them explicitly so a cancel in omp stops
           // everything the agent started in this session.
           const tasks = runningTasksBySession.get(sid);
           if (tasks && tasks.size > 0) {
@@ -1630,7 +1622,7 @@ function streamSimple(
     options?.signal?.addEventListener("abort", abortHandler, { once: true });
     // The per-turn budget is a checkpoint, not a failure: interrupt the turn
     // (session/stop), then send "go on" so the ZCode session resumes the task
-    // from its own history. The pi stream stays open until the task completes.
+    // from its own history. The omp stream stays open until the task completes.
     const timer = setTimeout(() => {
       if (settled || output.stopReason !== "pending") return;
       void (async () => {
@@ -1741,14 +1733,14 @@ function toPiModels(catalog: CatalogModel[]) {
 
 export default function (pi: ExtensionAPI) {
   mergeV2Providers();
-  // Capture the pi UI context so interaction/requestUserInput (askUserQuestion)
+  // Capture the omp UI context so interaction/requestUserInput (askUserQuestion)
   // can show its dialog from the app-server's request handler.
   pi.on("session_start", (_event, ctx) => {
     uiCtx = ctx;
-    // The pi session UUID is stable across `pi --session <id>` restores; the
-    // zcode sessionId mapping is keyed by it so a restored pi session resumes
+    // The omp session UUID is stable across `omp --resume <id>` restores; the
+    // zcode sessionId mapping is keyed by it so a restored omp session resumes
     // its own ZCode session instead of silently creating a fresh one.
-    piSessionId =
+    ompSessionId =
       ctx.sessionManager?.getSessionId() ?? ctx.sessionManager?.getSessionFile() ?? null;
   });
   pi.registerProvider("zcode", {
@@ -1759,9 +1751,9 @@ export default function (pi: ExtensionAPI) {
     // not authenticate; a resolvable key merely marks the provider configured.
     apiKey: "zcode-bridge",
     models: toPiModels(readCatalog()),
-    // pi calls this on every /model open, so the list follows the settings
-    // file without a reload.
-    refreshModels: async () => toPiModels(readCatalog()),
+    // omp refreshes the catalog through fetchDynamicModels; the static `models`
+    // above stay as fallbacks, so the list follows the settings file.
+    fetchDynamicModels: async () => toPiModels(readCatalog()),
     streamSimple,
   });
   watchConfigs();
@@ -1797,29 +1789,31 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ZCode-native steer: with ZCODE_STEER_MODE=guide, a message typed in pi
+  // ZCode-native steer: with ZCODE_STEER_MODE=guide, a message typed in omp
   // while the ZCode turn is running is sent straight to the running session
   // via the v4 command channel (sendText). The app-server admits it as a
   // guide input (injected at the next tool/message boundary) or falls back to
-  // a queue. Returning "handled" keeps pi from duplicating it into its own
-  // next turn; on any failure we fall back to pi's normal queueing.
+  // a queue. `handled: true` keeps omp from duplicating it into its own next
+  // turn; on any failure we fall back to omp's normal queueing.
+  //
+  // omp fires `input` for every editor submit, so the bridge's own turnActive
+  // flag is the discriminator: it is set only while a ZCode turn streams.
   pi.on("input", async (event): Promise<InputEventResult> => {
-    if (STEER_MODE !== "guide") return { action: "continue" };
-    if (event.streamingBehavior !== "steer") return { action: "continue" };
-    if (!turnActive || !sessionId) return { action: "continue" };
+    if (STEER_MODE !== "guide") return {};
+    if (!turnActive || !sessionId) return {};
     try {
       await request("v4/command", {
-        commandId: `pi-steer-${nextId++}`,
-        clientId: "pi-bridge",
+        commandId: `omp-steer-${nextId++}`,
+        clientId: "omp-bridge",
         sessionId,
         type: "sendText",
         payload: { text: event.text, attachments: [] },
         issuedAt: Date.now(),
       });
-      return { action: "handled" };
+      return { handled: true };
     } catch (e) {
       if (process.env.ZCODE_DEBUG) console.error("[zcode-debug] steer sendText failed:", e instanceof Error ? e.message : String(e));
-      return { action: "continue" };
+      return {};
     }
   });
 
@@ -1832,7 +1826,7 @@ export default function (pi: ExtensionAPI) {
       try {
         // Close persists the session in the app-server's store; the sidecar
         // mapping (see rememberSession) is intentionally NOT cleared, so a
-        // `pi --session` restore resumes this zcode session instead of
+        // `omp --resume` restore resumes this zcode session instead of
         // creating a new one.
         await request("session/close", { sessionId });
       } catch {

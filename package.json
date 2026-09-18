@@ -1,10 +1,10 @@
 {
-  "name": "zcode-provider",
-  "version": "0.5.0",
-  "description": "Use the ZCode agent (zcodex app-server) as a pi model provider: pi is the chat frontend, ZCode runs the model and its own tools (bash, edits, session memory).",
+  "name": "omp-zcode-provider",
+  "version": "0.6.0",
+  "description": "Use the ZCode agent (zcodex app-server) as an omp model provider: omp is the chat frontend, ZCode runs the model and its own tools (bash, edits, session memory). Fork of zcode-provider.",
   "keywords": [
-    "pi-package",
-    "pi-extension",
+    "omp-package",
+    "omp-extension",
     "zcode",
     "opencode",
     "agent"
@@ -22,18 +22,29 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ZhouXiaolin/zcode-provider.git"
+    "url": "git+https://github.com/rizquuula/omp-zcode-provider.git"
   },
-  "homepage": "https://github.com/ZhouXiaolin/zcode-provider",
+  "homepage": "https://github.com/rizquuula/omp-zcode-provider",
   "bugs": {
-    "url": "https://github.com/ZhouXiaolin/zcode-provider/issues"
+    "url": "https://github.com/rizquuula/omp-zcode-provider/issues"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@oh-my-pi/pi-ai": "*",
+    "@oh-my-pi/pi-coding-agent": "*",
+    "@oh-my-pi/pi-tui": "*"
   },
-  "pi": {
+  "peerDependenciesMeta": {
+    "@oh-my-pi/pi-ai": {
+      "optional": true
+    },
+    "@oh-my-pi/pi-coding-agent": {
+      "optional": true
+    },
+    "@oh-my-pi/pi-tui": {
+      "optional": true
+    }
+  },
+  "omp": {
     "extensions": [
       "./extensions"
     ]

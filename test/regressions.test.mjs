@@ -21,7 +21,7 @@ test("headless config watchers are unreferenced", () => {
   assert.match(source, /watcher\.unref\(\)/);
 });
 
-test("ZCode model limits are exposed to Pi", () => {
+test("ZCode model limits are exposed to omp", () => {
   assert.match(source, /contextWindow: m\.contextWindow \?\? 200000/);
   assert.match(source, /maxTokens: m\.maxTokens \?\? 8192/);
 });

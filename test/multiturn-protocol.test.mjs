@@ -30,7 +30,7 @@ function sendPrompt(child, id, message, state) {
 }
 
 test("ignores racy prompt_completed snapshots across consecutive turns", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-zcode-provider-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "omp-zcode-provider-test-"));
   const fixture = join(dir, "fake-zcode-server.mjs");
   const settings = join(dir, "cli.json");
   const desktop = join(dir, "v2.json");
@@ -58,11 +58,11 @@ test("ignores racy prompt_completed snapshots across consecutive turns", async (
 
   const state = { waiters: [], text: [] };
   const child = spawn(
-    process.env.PI_BIN || "pi",
+    process.env.OMP_BIN || "omp",
     [
       "--mode", "rpc", "--no-session", "--no-extensions", "--extension", extension,
-      "--provider", "zcode", "--model", "Fixture/fixture", "--no-tools",
-      "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes",
+      "--model", "zcode/Fixture/fixture", "--no-tools",
+      "--no-skills", "--no-rules", "--no-title",
     ],
     {
       env: {
@@ -93,7 +93,7 @@ test("ignores racy prompt_completed snapshots across consecutive turns", async (
     }
   });
   child.on("exit", (code) => {
-    const error = new Error(`Pi exited early (${code}): ${stderr}`);
+    const error = new Error(`omp exited early (${code}): ${stderr}`);
     for (const waiter of state.waiters.splice(0)) waiter.reject(error);
   });
 
