@@ -4,13 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const extension =
   process.env.ZCODE_EXTENSION_UNDER_TEST || join(root, "extensions/zcode-provider.ts");
 const fixtureSource = join(root, "fixtures/fake-zcode-server.mjs");
+const hostBin = process.env.OMP_BIN || "omp";
+
+// The protocol test drives a real host binary. Skip it when the host is not
+// installed, so the suite still runs on a machine without omp.
+const hostMissing = spawnSync(hostBin, ["--version"], { stdio: "ignore" }).error?.code === "ENOENT";
+const skipReason = hostMissing
+  ? `host binary "${hostBin}" is not on PATH; install omp or set OMP_BIN`
+  : false;
 
 function sendPrompt(child, id, message, state) {
   return new Promise((resolve, reject) => {
@@ -29,7 +37,7 @@ function sendPrompt(child, id, message, state) {
   });
 }
 
-test("ignores racy prompt_completed snapshots across consecutive turns", async () => {
+test("ignores racy prompt_completed snapshots across consecutive turns", { skip: skipReason }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "omp-zcode-provider-test-"));
   const fixture = join(dir, "fake-zcode-server.mjs");
   const settings = join(dir, "cli.json");
@@ -58,7 +66,7 @@ test("ignores racy prompt_completed snapshots across consecutive turns", async (
 
   const state = { waiters: [], text: [] };
   const child = spawn(
-    process.env.OMP_BIN || "omp",
+    hostBin,
     [
       "--mode", "rpc", "--no-session", "--no-extensions", "--extension", extension,
       "--model", "zcode/Fixture/fixture", "--no-tools",

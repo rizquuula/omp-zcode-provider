@@ -15,6 +15,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The protocol test drives a real omp binary. Without it, node --test
+      # reports one skipped test instead of the full suite.
+      - uses: oven-sh/setup-bun@v2
+      - name: Install the omp host under test
+        run: bun install -g @oh-my-pi/pi-coding-agent
+      - name: Verify the host binary
+        run: omp --version
       - run: npm install --ignore-scripts
       - run: npm test
       - run: npm pack --dry-run
