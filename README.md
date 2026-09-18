@@ -25,7 +25,10 @@ to the omp extension API. Three host APIs differ from pi, so this fork does
 ## Install
 
 ```sh
-# from the GitHub repo:
+# from npm:
+omp plugin install omp-zcode-provider
+
+# or from the GitHub repo:
 omp plugin install github:rizquuula/omp-zcode-provider
 
 # or from a local checkout (development):
