@@ -67,6 +67,9 @@ test("ignores racy prompt_completed snapshots across consecutive turns", async (
     {
       env: {
         ...process.env,
+        // Keep the child's caches (model cache, logs, plugins) inside the
+        // throwaway dir: a fixture catalog must never land in the real cache.
+        HOME: dir,
         ZCODE_SERVE_CMD: `${process.execPath} ${fixture}`,
         ZCODE_SETTINGS: settings,
         ZCODE_V2_CONFIG: desktop,
