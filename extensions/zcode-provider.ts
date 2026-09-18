@@ -59,9 +59,12 @@ import type {
   Model,
   SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import type { InputEventResult } from "@oh-my-pi/pi-coding-agent";
-import { getEditorTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import {
+  type ExtensionAPI,
+  type ExtensionContext,
+  getEditorTheme,
+  type InputEventResult,
+} from "@oh-my-pi/pi-coding-agent";
 import {
   Editor,
   Key,

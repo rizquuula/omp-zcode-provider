@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,6 +119,8 @@ test("ignores racy prompt_completed snapshots across consecutive turns", { skip:
   } finally {
     child.kill("SIGTERM");
     lines.close();
-    await rm(dir, { recursive: true, force: true });
+    // Wait for the host to stop writing logs before the temp dir is removed.
+    await once(child, "exit").catch(() => {});
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
