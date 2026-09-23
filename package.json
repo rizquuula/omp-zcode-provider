@@ -1,6 +1,6 @@
 {
   "name": "omp-zcode-provider",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Use the ZCode agent (zcodex app-server) as an omp model provider: omp is the chat frontend, ZCode runs the model and its own tools (bash, edits, session memory). Fork of zcode-provider.",
   "keywords": [
     "omp-package",
